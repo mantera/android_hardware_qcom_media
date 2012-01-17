@@ -117,6 +117,12 @@ uint32_t AudioPolicyManager::getDeviceForStrategy(routing_strategy strategy, boo
             device = getDeviceForStrategy(STRATEGY_PHONE, false);
             break;
         }
+        // FALL THROUGH
+
+    case STRATEGY_ENFORCED_AUDIBLE:
+        // strategy STRATEGY_ENFORCED_AUDIBLE uses same routing policy as STRATEGY_SONIFICATION
+        // except when in call where it doesn't default to STRATEGY_PHONE behavior
+
         device = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_SPEAKER;
         if (device == 0) {
             LOGE("getDeviceForStrategy() speaker device not found");
@@ -173,7 +179,8 @@ uint32_t AudioPolicyManager::getDeviceForStrategy(routing_strategy strategy, boo
                 device2 = mAvailableOutputDevices & AudioSystem::DEVICE_OUT_EARPIECE;
             }
 
-            // device is DEVICE_OUT_SPEAKER if we come from case STRATEGY_SONIFICATION, 0 otherwise
+            // device is DEVICE_OUT_SPEAKER if we come from case STRATEGY_SONIFICATION or
+            // STRATEGY_ENFORCED_AUDIBLE, 0 otherwise
             device |= device2;
         }
         break;
@@ -564,6 +571,10 @@ audio_io_handle_t AudioPolicyManager::getSession(AudioSystem::stream_type stream
         delete outputDesc;
         return 0;
     }
+
+    //reset it here, it will get updated in startoutput
+    outputDesc->mDevice = 0;
+
     mOutputs.add(output, outputDesc);
     mLPADecodeOutput = output;
     mLPAStreamType   = stream;
@@ -641,7 +652,8 @@ status_t AudioPolicyManager::startOutput(audio_io_handle_t output, AudioSystem::
     routing_strategy strategy = getStrategy((AudioSystem::stream_type)stream);
 
 #ifdef WITH_A2DP
-    if (mA2dpOutput != 0  && !a2dpUsedForSonification() && strategy == STRATEGY_SONIFICATION) {
+    if (mA2dpOutput != 0  && !a2dpUsedForSonification() &&
+            (strategy == STRATEGY_SONIFICATION || strategy == STRATEGY_ENFORCED_AUDIBLE)) {
         setStrategyMute(STRATEGY_MEDIA, true, mA2dpOutput);
     }
 #endif
@@ -704,8 +716,12 @@ status_t AudioPolicyManager::stopOutput(audio_io_handle_t output, AudioSystem::s
         setOutputDevice(output, newDevice);
 
 #ifdef WITH_A2DP
-        if (mA2dpOutput != 0 && !a2dpUsedForSonification() && strategy == STRATEGY_SONIFICATION) {
-            setStrategyMute(STRATEGY_MEDIA, false, mA2dpOutput, mOutputs.valueFor(mHardwareOutput)->mLatency*2);
+        if (mA2dpOutput != 0 && !a2dpUsedForSonification() &&
+                (strategy == STRATEGY_SONIFICATION || strategy == STRATEGY_ENFORCED_AUDIBLE)) {
+            setStrategyMute(STRATEGY_MEDIA,
+                            false,
+                            mA2dpOutput,
+                            mOutputs.valueFor(mHardwareOutput)->mLatency*2);
         }
 #endif
         if (output != mHardwareOutput) {
@@ -777,10 +793,16 @@ void AudioPolicyManager::setOutputDevice(audio_io_handle_t output, uint32_t devi
         || device == (AudioSystem::DEVICE_OUT_SPEAKER | AudioSystem::DEVICE_OUT_FM_TX)) {
         setStrategyMute(STRATEGY_MEDIA, true, output);
         // Mute LPA output also if it belongs to STRATEGY_MEDIA
-        if((mLPADecodeOutput != -1 &&
+        if(((mLPADecodeOutput != -1) && (mLPADecodeOutput != output) &&
             mOutputs.valueFor(mLPADecodeOutput)->isUsedByStrategy(STRATEGY_MEDIA))) {
-            LOGV("setOutputDevice: Muting mLPADecodeOutput");
+            LOGV("setOutputDevice: Muting mLPADecodeOutput:%d",mLPADecodeOutput);
             setStrategyMute(STRATEGY_MEDIA, true, mLPADecodeOutput);
+        }
+        // Mute hardware output also if it belongs to STRATEGY_MEDIA
+        if(((mHardwareOutput != -1) && (mHardwareOutput != output) &&
+            mOutputs.valueFor(mHardwareOutput)->isUsedByStrategy(STRATEGY_MEDIA))) {
+            LOGV("setOutputDevice: Muting mHardwareOutput:%d",mHardwareOutput);
+            setStrategyMute(STRATEGY_MEDIA, true, mHardwareOutput);
         }
         // wait for the PCM output buffers to empty before proceeding with the rest of the command
         usleep(outputDesc->mLatency*2*1000);
@@ -835,10 +857,16 @@ void AudioPolicyManager::setOutputDevice(audio_io_handle_t output, uint32_t devi
         || prevDevice == (AudioSystem::DEVICE_OUT_SPEAKER | AudioSystem::DEVICE_OUT_FM_TX)) {
         setStrategyMute(STRATEGY_MEDIA, false, output, delayMs);
         // Unmute LPA output also if it belongs to STRATEGY_MEDIA
-        if((mLPADecodeOutput != -1 &&
+        if(((mLPADecodeOutput != -1) && (mLPADecodeOutput != output) &&
             mOutputs.valueFor(mLPADecodeOutput)->isUsedByStrategy(STRATEGY_MEDIA))) {
-            LOGV("setOutputDevice: Unmuting mLPADecodeOutput");
+            LOGV("setOutputDevice: Unmuting mLPADecodeOutput:%d delayMs:%d",mLPADecodeOutput,delayMs);
             setStrategyMute(STRATEGY_MEDIA, false, mLPADecodeOutput, delayMs);
+        }
+        // Unmute hardware output also if it belongs to STRATEGY_MEDIA
+        if(((mHardwareOutput != -1) && (mHardwareOutput != output) &&
+            mOutputs.valueFor(mHardwareOutput)->isUsedByStrategy(STRATEGY_MEDIA))) {
+            LOGV("setOutputDevice: Unmuting mHardwareOutput:%d delayMs:%d",mHardwareOutput,delayMs);
+            setStrategyMute(STRATEGY_MEDIA, false, mHardwareOutput, delayMs);
         }
     }
 }
