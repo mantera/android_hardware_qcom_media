@@ -1,6 +1,6 @@
 /*
 ** Copyright 2008, The Android Open-Source Project
-** Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+** Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
 ** Copyright (c) 2012, The CyanogenMod Project
 **
 ** Licensed under the Apache License, Version 2.0 (the "License");
@@ -619,7 +619,7 @@ AudioHardware::AudioHardware() :
     mOutput(0), mBluetoothVGS(false),
     mCurSndDevice(-1),
     mTtyMode(TTY_OFF), mFmFd(-1), mNumPcmRec(0),
-    mVoipFd(-1), mNumVoipStreams(0),
+    mVoipFd(-1), mNumVoipStreams(0), mDirectOutput(0),
     mRecordState(false), mEffectEnabled(false)
 {
 
@@ -981,18 +981,23 @@ AudioStreamOut* AudioHardware::openOutputStream(
 #ifdef QCOM_VOIP
         if(devices == AudioSystem::DEVICE_OUT_DIRECTOUTPUT) {
             // open direct output stream
-            LOGV(" AudioHardware::openOutputStream Direct output stream \n");
-            AudioStreamOutDirect* out = new AudioStreamOutDirect();
-            lStatus = out->set(this, devices, format, channels, sampleRate);
-            if (status) {
-                *status = lStatus;
+            if(mDirectOutput == 0) {
+               LOGV(" AudioHardware::openOutputStream Direct output stream \n");
+               AudioStreamOutDirect* out = new AudioStreamOutDirect();
+               lStatus = out->set(this, devices, format, channels, sampleRate);
+               if (status) {
+                   *status = lStatus;
+               }
+               if (lStatus == NO_ERROR) {
+                   mDirectOutput = out;
+                   LOGV(" \n set sucessful for AudioStreamOutDirect");
+               } else {
+                   LOGE(" \n set Failed for AudioStreamOutDirect");
+                   delete out;
+               }
             }
-            if (lStatus == NO_ERROR) {
-                mDirectOutput = out;
-                LOGV(" \n set sucessful for AudioStreamOutDirect");
-            } else {
-                LOGE(" \n set Failed for AudioStreamOutDirect");
-                delete out;
+            else {
+                   LOGE(" \n AudioHardware::AudioStreamOutDirect is already open");
             }
             return mDirectOutput;
         } else {
@@ -1466,7 +1471,7 @@ status_t AudioHardware::setVoiceVolume(float v)
 
 status_t AudioHardware::setFmVolume(float v)
 {
-    int vol = android::AudioSystem::logToLinear( v );
+    int vol = android::AudioSystem::logToLinear( (v?(v + 0.005):v) );
     if ( vol > 100 ) {
         vol = 100;
     }
@@ -3309,6 +3314,7 @@ LOGE("  write Error \n");
     if (mFd >= 0) {
         ::close(mFd);
         mFd = -1;
+        mHardware->mVoipFd = -1;
     }
     // Simulate audio output timing in case of error
     usleep(bytes * 1000000 / frameSize() / sampleRate());
@@ -3944,7 +3950,7 @@ status_t AudioHardware::AudioStreamInMSM72xx::setParameters(const String8& keyVa
         LOGV("set input routing %x", device);
         if (device & (device - 1)) {
             status = BAD_VALUE;
-        } else {
+        } else if (device) {
             mDevices = device;
             status = mHardware->doRouting(this);
         }
@@ -4039,6 +4045,9 @@ status_t AudioHardware::AudioStreamInVoip::set(
         LOGV("Check if driver is open");
         if(mHardware->mVoipFd >= 0) {
             mFd = mHardware->mVoipFd;
+            // Increment voip stream count
+            mHardware->mNumVoipStreams++;
+            LOGV("MVS driver is already opened, mHardware->mNumVoipStreams = %d \n", mHardware->mNumVoipStreams);
         }
         else {
             LOGE("open mvs driver");
@@ -4157,6 +4166,7 @@ Error:
     if (mFd >= 0) {
         ::close(mFd);
         mFd = -1;
+        mHardware->mVoipFd = -1;
     }
     LOGE("Error : ret status \n");
     return status;
@@ -4177,6 +4187,7 @@ ssize_t AudioHardware::AudioStreamInVoip::read( void* buffer, ssize_t bytes)
     if (!mHardware) return -1;
 
     size_t count = bytes;
+    size_t totalBytesRead = 0;
     size_t  aac_framesize= bytes;
     uint8_t* p = static_cast<uint8_t*>(buffer);
     uint32_t* recogPtr = (uint32_t *)p;
@@ -4217,7 +4228,7 @@ ssize_t AudioHardware::AudioStreamInVoip::read( void* buffer, ssize_t bytes)
               memcpy(buffer,&audio_mvs_frame.voc_pkt, count);
               count -= audio_mvs_frame.len;
               p += audio_mvs_frame.len;
-              bytes += audio_mvs_frame.len;
+              totalBytesRead += audio_mvs_frame.len;
               if(!mFirstread) {
                   mFirstread = true;
                   break;
@@ -4230,7 +4241,7 @@ ssize_t AudioHardware::AudioStreamInVoip::read( void* buffer, ssize_t bytes)
               }
       }
   }
-  return bytes;
+  return totalBytesRead;
 }
 
 status_t AudioHardware::AudioStreamInVoip::standby()
