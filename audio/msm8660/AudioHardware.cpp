@@ -63,6 +63,7 @@ extern "C" {
 #define FM_FILE_REC 2
 
 #define VOICE_SESSION_NAME "Voice session"
+#define VOIP_SESSION_NAME "VoIP session"
 
 namespace android_audio_legacy {
 
@@ -1015,6 +1016,7 @@ AudioStreamIn* AudioHardware::openInputStream(
     }
 
     mLock.lock();
+#ifndef NO_QCOM_MVS
     if(devices == AudioSystem::DEVICE_IN_COMMUNICATION) {
         LOGE("Create Audio stream Voip \n");
         AudioStreamInVoip* inVoip = new AudioStreamInVoip();
@@ -1033,6 +1035,7 @@ AudioStreamIn* AudioHardware::openInputStream(
         mLock.unlock();
         return inVoip;
     } else {
+#endif
         AudioStreamInMSM72xx* in72xx = new AudioStreamInMSM72xx();
         status_t lStatus = in72xx->set(this, devices, format, channels, sampleRate, acoustic_flags);
         if (status) {
@@ -1047,7 +1050,9 @@ AudioStreamIn* AudioHardware::openInputStream(
         mInputs.add(in72xx); 
         mLock.unlock();
         return in72xx;
+#ifndef NO_QCOM_MVS
     }
+#endif
 }
 
 void AudioHardware::closeInputStream(AudioStreamIn* in) {
@@ -1207,6 +1212,7 @@ status_t AudioHardware::setParameters(const String8& keyValuePairs)
         doRouting(NULL);
     }
 
+#ifdef QCOM_ANC
     key = String8(ANC_KEY);
     if (param.get(key, value) == NO_ERROR) {
         if (value == "true") {
@@ -1215,14 +1221,13 @@ status_t AudioHardware::setParameters(const String8& keyValuePairs)
         } else {
            LOGE("Disabling ANC setting in the setparameter\n");
            anc_setting= false;
-#ifdef QCOM_VOIP
            //disabling ANC feature.
            enableANC(0,cur_rx);
-#endif
            anc_running = false;
         }
      doRouting(NULL);
     }
+#endif
 
     key = String8(TTY_MODE_KEY);
     if (param.get(key, value) == NO_ERROR) {
