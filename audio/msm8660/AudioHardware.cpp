@@ -598,7 +598,7 @@ AudioHardware::AudioHardware() :
     mInit(false), mMicMute(true), mBluetoothNrec(true), mBluetoothId(0),
     mHACSetting(false), mBluetoothIdTx(0), mBluetoothIdRx(0),
     mOutput(0), mBluetoothVGS(false),
-    mCurSndDevice(-1),
+    mCurSndDevice(-1), mVoiceVolume(1),
     mTtyMode(TTY_OFF), mFmFd(-1), mNumPcmRec(0),
     mVoipFd(-1), mNumVoipStreams(0), mDirectOutput(0),
     mRecordState(false), mEffectEnabled(false)
@@ -646,6 +646,12 @@ AudioHardware::AudioHardware() :
        LOGE("NO devices registered\n");
        return;
     }
+
+    //End any voice call if it exists. This is to ensure the next request
+    //to voice call after a mediaserver crash or sub system restart
+    //is not ignored by the voice driver.
+    if (msm_end_voice() < 0)
+        LOGE("msm_end_voice() failed");
 
     if(msm_reset_all_device() < 0)
         LOGE("msm_reset_all_device() failed");
@@ -1244,7 +1250,10 @@ status_t AudioHardware::setParameters(const String8& keyValuePairs)
            return NO_ERROR;
         }
         LOGI("Changed TTY Mode=%s", value.string());
-        doRouting(NULL);
+        if((mMode == AudioSystem::MODE_IN_CALL) &&
+           (cur_rx == DEVICE_HEADSET_RX) &&
+           (cur_tx == DEVICE_HEADSET_TX))
+           doRouting(NULL);
     }
 
     key = String8(ACTIVE_AP);
@@ -1381,6 +1390,8 @@ status_t AudioHardware::setVoiceVolume(float v)
         LOGW("setVoiceVolume(%f) over 1.0, assuming 1.0\n", v);
         v = 1.0;
     }
+
+    mVoiceVolume = v;
 
     if(isStreamOnAndActive(VOICE_CALL)) {
         session_id = voice_session_id;
@@ -1666,6 +1677,7 @@ static status_t do_route_audio_rpc(uint32_t device, int mode, bool mic_mute)
             // Routing Voice
             if ( (new_rx_device != INVALID_DEVICE) && (new_tx_device != INVALID_DEVICE))
             {
+                initACDB();
                 acdb_loader_send_voice_cal(ACDB_ID(new_rx_device),ACDB_ID(new_tx_device));
                 LOGD("Starting voice on Rx %d and Tx %d device", DEV_ID(new_rx_device), DEV_ID(new_tx_device));
 
@@ -1697,7 +1709,8 @@ static status_t do_route_audio_rpc(uint32_t device, int mode, bool mic_mute)
            msm_start_voice_ext(voice_session_id);
            msm_set_voice_tx_mute_ext(voice_session_mute,voice_session_id);
 #else
-           msm_set_voice_tx_mute(0);
+           if (mic_mute == false)
+               msm_set_voice_tx_mute(0);
 #endif
 
             if(!isDeviceListEmpty())
@@ -1759,12 +1772,12 @@ status_t AudioHardware::doAudioRouteOrMute(uint32_t device)
     }
 #endif
 
-    if (isHTCPhone) {
-        if (device == SND_DEVICE_BT) {
-            if (!mBluetoothNrec)
-                device = SND_DEVICE_BT_EC_OFF;
-        }
+    if (device == SND_DEVICE_BT) {
+        if (!mBluetoothNrec)
+            device = SND_DEVICE_BT_EC_OFF;
+    }
 
+    if (isHTCPhone) {
         if (support_aic3254) {
             aic3254_config(device);
             do_aic3254_control(device);
@@ -1772,6 +1785,12 @@ status_t AudioHardware::doAudioRouteOrMute(uint32_t device)
 
         getACDB(device);
     }
+
+    if (isStreamOnAndActive(VOICE_CALL) && mMicMute == false)
+        msm_set_voice_tx_mute(0);
+
+    if (isInCall())
+        setVoiceVolume(mVoiceVolume);
 
     LOGV("doAudioRouteOrMute() device %x, mMode %d, mMicMute %d", device, mMode, mMicMute);
     return do_route_audio_rpc(device, mMode, mMicMute);
@@ -3076,6 +3095,8 @@ ssize_t AudioHardware::AudioStreamOutDirect::write(const void* buffer, size_t by
             // fill 2 buffers before AUDIO_START
             mStartCount = AUDIO_HW_NUM_OUT_BUF;
             mStandby = false;
+
+            Mutex::Autolock lock(mDeviceSwitchLock);
             //Routing Voip
             if ((cur_rx != INVALID_DEVICE) && (cur_tx != INVALID_DEVICE))
             {
@@ -3110,8 +3131,6 @@ ssize_t AudioHardware::AudioStreamOutDirect::write(const void* buffer, size_t by
             msm_start_voice();
             msm_set_voice_tx_mute(0);
 #endif
-            if(!isDeviceListEmpty())
-                updateDeviceInfo(cur_rx,cur_tx);
             addToTable(0,cur_rx,cur_tx,VOIP_CALL,true);
         }
     }
@@ -3938,6 +3957,8 @@ status_t AudioHardware::AudioStreamInVoip::set(
             }
 
             LOGV("Going to enable RX/TX device for voice stream");
+
+            Mutex::Autolock lock(mDeviceSwitchLock);
             // Routing Voip
            if ( (cur_rx != INVALID_DEVICE) && (cur_tx != INVALID_DEVICE))
            {
@@ -3976,8 +3997,6 @@ status_t AudioHardware::AudioStreamInVoip::set(
            msm_start_voice();
            msm_set_voice_tx_mute(0);
 #endif
-           if(!isDeviceListEmpty())
-                updateDeviceInfo(cur_rx,cur_tx);
            addToTable(0,cur_rx,cur_tx,VOIP_CALL,true);
     }
     mFormat =  *pFormat;
