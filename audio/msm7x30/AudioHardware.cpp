@@ -2451,7 +2451,6 @@ status_t AudioHardware::AudioSessionOutMSM7xxx::set(
             LOGE("msm_route_stream(PCM_PLAY,%d,%d,1) failed",sessionId,DEV_ID(cur_rx));
         }
 
-#ifdef FM_RADIO
         Mutex::Autolock lock_1(mComboDeviceLock);
 
         if(CurrentComboDeviceData.DeviceId == SND_DEVICE_FM_TX_AND_SPEAKER){
@@ -2470,7 +2469,7 @@ status_t AudioHardware::AudioSessionOutMSM7xxx::set(
             }
             CurrentComboDeviceData.StreamType = LPA_DECODE;
         }
-#endif
+
         mSessionId = sessionId;
     }
     return NO_ERROR;
